@@ -2,7 +2,7 @@
 let registeredCards = {
   "A1B2C3D4": "Budi Santoso",
   "E5F60718": "Siti Aminah",
-  "C3CF6C12": "MIFTAHUL HAQ"
+  "C3CF6C12": "Fathul"
 };
 
 let attendanceLogs = [];
