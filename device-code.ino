@@ -2,6 +2,7 @@
 #include <MFRC522.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <WiFiClient.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
@@ -78,14 +79,19 @@ void loop() {
   Serial.print("UID Kartu Terbaca: ");
   Serial.println(uidString);
 
-  // Tampilkan status proses di LCD
+  // Tampilkan UID terbaca dulu di LCD sebelum kirim ke server
   lcd.clear();
   lcd.setCursor(0, 0);
+  lcd.print("UID: ");
+  lcd.print(uidString);
+  delay(1000);
+  lcd.setCursor(0, 1);
   lcd.print("Memproses...");
 
   // Kirim data ke endpoint server jika Wi-Fi terhubung
   if (WiFi.status() == WL_CONNECTED) {
-    WiFiClient client;
+    WiFiClientSecure client;
+    client.setInsecure(); // skip validasi sertifikat — cukup buat testing
     HTTPClient http;
 
     http.begin(client, serverEndpoint);
