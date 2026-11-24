@@ -7,6 +7,9 @@ let registeredCards = {
 
 let attendanceLogs = [];
 
+// Hasil scan terakhir mode baca (bukan presensi)
+let lastRead = null;
+
 export default function handler(req, res) {
   // Mengizinkan CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -21,7 +24,8 @@ export default function handler(req, res) {
   if (req.method === 'GET') {
     return res.status(200).json({
       cards: registeredCards,
-      logs: attendanceLogs
+      logs: attendanceLogs,
+      lastRead: lastRead
     });
   }
 
@@ -38,7 +42,7 @@ export default function handler(req, res) {
 
   // POST: Endpoint utama yang dipanggil oleh ESP8266
   if (req.method === 'POST') {
-    const { uid_kartu } = req.body || {};
+    const { uid_kartu, mode } = req.body || {};
 
     if (!uid_kartu) {
       return res.status(400).json({
@@ -50,6 +54,13 @@ export default function handler(req, res) {
     const uid = uid_kartu.trim().toUpperCase();
     const namaUser = registeredCards[uid];
     const timestamp = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Makassar' });
+
+    // Mode baca: catat UID saja, bukan presensi
+    if (mode === "read") {
+      lastRead = { uid: uid, waktu: timestamp };
+      console.log(`[read] ${uid}`);
+      return res.status(200).json({ status: "read", uid: uid });
+    }
 
     if (namaUser) {
       attendanceLogs.unshift({

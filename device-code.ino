@@ -7,11 +7,19 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <ArduinoJson.h>
+#include <EEPROM.h>
 
 // --- KONFIGURASI PIN RFID & HARDWARE ---
 #define RST_PIN     0   // D3 (GPIO0)[cite: 1, 3]
 #define SS_PIN      2   // D4 (GPIO2)[cite: 1, 3]
-const int buzzerPin = 15; // D8 (GPIO15)[cite: 1, 3]
+const int buzzerPin = 15; // D8 (GPIO15)
+const int modePin = 14;   // D5 (GPIO14) — tombol mode, INPUT_PULLUP ke GND
+
+// Mode: false = presensi, true = baca UID. Persist di EEPROM addr 0.
+bool modeBaca = false;
+
+// Detik terakhir yang sudah digambar di LCD (-1 = perlu gambar ulang, -2 = NTP belum sync)
+int jamTerakhir = -1;
 
 // Inisialisasi Objek RFID dan LCD (Alamat I2C umum: 0x27 atau 0x3F)
 MFRC522 rfid(SS_PIN, RST_PIN); 
@@ -32,6 +40,13 @@ void setup() {
   // Inisialisasi Pin Buzzer
   pinMode(buzzerPin, OUTPUT);
   digitalWrite(buzzerPin, LOW);
+
+  // Inisialisasi tombol mode (pull-up, terhubung ke GND)
+  pinMode(modePin, INPUT_PULLUP);
+
+  // Baca mode terakhir dari EEPROM
+  EEPROM.begin(4);
+  modeBaca = (EEPROM.read(0) == 1);
 
   // Inisialisasi LCD
   lcd.init();                      
@@ -55,6 +70,10 @@ void setup() {
   }
   
   Serial.println("\nWi-Fi Terhubung!");
+
+  // Sinkron jam via NTP (WITA / UTC+8, sama dengan timezone server)
+  configTime(8 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("WiFi Terhubung!");
@@ -65,6 +84,9 @@ void setup() {
 }
 
 void loop() {
+  cekTombol();
+  updateJam();
+
   // Cek apakah ada kartu baru yang menempel
   if (!rfid.PICC_IsNewCardPresent()) return;
   if (!rfid.PICC_ReadCardSerial()) return;
@@ -98,7 +120,9 @@ void loop() {
     http.addHeader("Content-Type", "application/json");
 
     // Format payload JSON yang dikirim ke server
-    String httpRequestData = "{\"uid_kartu\":\"" + uidString + "\"}";
+    String httpRequestData = modeBaca
+      ? "{\"uid_kartu\":\"" + uidString + "\",\"mode\":\"read\"}"
+      : "{\"uid_kartu\":\"" + uidString + "\"}";
     int httpResponseCode = http.POST(httpRequestData);
 
     if (httpResponseCode > 0) {
@@ -115,7 +139,20 @@ void loop() {
         String nama = doc["nama"];
 
         lcd.clear();
-        if (status == "success") {
+        if (modeBaca) {
+          // Mode baca: konfirmasi UID terkirim
+          if (status == "read") {
+            lcd.setCursor(0, 0);
+            lcd.print(uidString);
+            lcd.setCursor(0, 1);
+            lcd.print("UID Terkirim");
+            digitalWrite(buzzerPin, HIGH); delay(80); digitalWrite(buzzerPin, LOW);
+          } else {
+            lcd.setCursor(0, 0);
+            lcd.print("Gagal Kirim");
+            errorBeep();
+          }
+        } else if (status == "success") {
           // Menampilkan format nama dan pesan berhasil diabsen pada LCD
           lcd.setCursor(0, 0);
           lcd.print(nama);
@@ -170,13 +207,75 @@ void loop() {
   tampilkanSiaga();
 }
 
-// Fungsi tampilan standby / siaga
+// Fungsi tampilan standby / siaga (tampilkan mode aktif)
 void tampilkanSiaga() {
   lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Silahkan Tap");
+  if (modeBaca) {
+    lcd.setCursor(0, 0);
+    lcd.print(tengah("deviceId"));
+  } else {
+    lcd.setCursor(0, 0);
+    lcd.print(tengah("--:--:--"));
+    jamTerakhir = -1;
+  }
   lcd.setCursor(0, 1);
-  lcd.print("Kartu Anda...");
+  lcd.print(tengah("Tap Kartu Anda"));
+  if (!modeBaca) updateJam();
+}
+
+// Rata tengah di layar 16 kolom
+String tengah(const String& teks) {
+  int pad = (16 - teks.length()) / 2;
+  String hasil = "";
+  for (int i = 0; i < pad; i++) hasil += " ";
+  return hasil + teks;
+}
+
+// Gambar jam di baris 0, refresh tiap detik (mode presensi saja)
+void updateJam() {
+  if (modeBaca) return;
+  time_t now = time(nullptr);
+  if (now < 1000000000) { // NTP belum sinkron
+    if (jamTerakhir != -2) {
+      lcd.setCursor(0, 0);
+      lcd.print(tengah("--:--:--"));
+      jamTerakhir = -2;
+    }
+    return;
+  }
+  struct tm* t = localtime(&now);
+  if (t->tm_sec == jamTerakhir) return;
+  jamTerakhir = t->tm_sec;
+  char jam[9];
+  strftime(jam, sizeof(jam), "%H:%M:%S", t);
+  lcd.setCursor(0, 0);
+  lcd.print(tengah(jam));
+}
+
+// Cek tombol mode: tekan pendek = ganti mode, tahan >= 3 detik = restart
+void cekTombol() {
+  if (digitalRead(modePin) != LOW) return;
+  unsigned long tekanMulai = millis();
+  while (digitalRead(modePin) == LOW) {
+    if (millis() - tekanMulai >= 3000) {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Restart...");
+      ESP.restart();
+    }
+    delay(10);
+  }
+  delay(30); // debounce setelah tombol dilepas
+  gantiMode();
+}
+
+// Ganti mode dan simpan ke EEPROM
+void gantiMode() {
+  modeBaca = !modeBaca;
+  EEPROM.write(0, modeBaca ? 1 : 0);
+  EEPROM.commit();
+  Serial.println(modeBaca ? "Mode: BACA UID" : "Mode: PRESENSI");
+  tampilkanSiaga();
 }
 
 // Fungsi Buzzer Sukses
